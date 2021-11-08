@@ -1,0 +1,393 @@
+library("vegan")
+library("rstatix")
+library("tidyverse")
+library("scales")
+library("cowplot")
+library("plotrix")
+
+##Loading data
+data<- read.csv("PVID_protcounts_85id100L.csv") #PVID_protcounts5_15_20.csv, newest: PVID_protcounts_85id100L.csv PVID_AminoTypes_noTax_60id_protcounts.csv
+
+data2 <-as.data.frame(t(data))
+data2$sample <- row.names(data2)
+str(data2)
+colnames(data2)<- as.matrix(data2[1,])
+as.data.frame(data2)
+data2 <- data2[-1,]
+
+data2 <- data2 %>%
+  rename(Sample=X.Sequence.)
+data2dim <- dim(data2)
+
+##Loading metadata
+samples <- read.csv("pvid_samples.csv")
+
+##Combining data and metadata
+data3 <- merge(data2, samples, by="Sample")
+
+dim_data3 <- dim(data3)
+dim_samples <- dim(samples)
+cols <- dim_data3[2]-dim_samples[2]+1
+first <-colnames(data3)[2]
+last <- colnames(data3)[cols]
+data3[,2:cols] <- lapply(data3[,2:cols], as.character)
+data3[,2:cols] <- lapply(data3[,2:cols], as.numeric)
+str(data3)
+
+#Calculate total reads per sample
+data4 <- data3%>%
+  mutate(sum=select(.,2:cols)%>%
+           apply(1, sum, na.rm=TRUE))
+
+mean(data4$sum)
+sd(data4$sum)
+sum(data4$sum)
+samplereads <- as.data.frame(data4$Sample)
+samplereads$reads <- data4$sum
+samplereads
+
+##Figure with read depth
+readdepth <- ggplot(data4, aes(x=Sample, y=sum))+
+  geom_point()+
+  theme_classic()+
+  theme(axis.text.y = element_text(size=6))+
+  coord_flip()+
+  labs(y="Total reads")
+readdepth
+
+##Filter samples with low reads
+data5 <- data4 %>%
+  filter(sum>10000)
+data5dim <-dim(data5)
+minreads<-min(data5$sum)
+max(data5$sum)
+mean(data5$sum)
+sd(data5$sum)
+min(data5$sum)
+
+##rarefy dataset
+raredata <- as.data.frame(rrarefy(data5[,2:cols], sample=minreads))
+str(data5)
+
+####Diversity metrics based on rarefied data
+index        <-diversity(raredata, index= "shannon")
+shannondata5 <- as.data.frame(index)
+
+index        <- diversity(raredata, index= "simpson")
+simpsondata5 <- as.data.frame(index)
+
+mind5             <- min(data5$sum)
+index2            <- rarefy(data5[,2:cols], sample=mind5)
+rarerichnessdata5 <- as.data.frame(index2)
+
+metadata <- data5[,(cols+1):data5dim[2]]
+
+metadata$Sample           <- data5$Sample
+shannondata5$Sample       <- data5$Sample
+simpsondata5$Sample       <- data5$Sample
+rarerichnessdata5$Sample  <-data5$Sample
+raredata$Sample           <- data5$Sample
+
+shannondata5_2      <- merge(shannondata5, metadata, by="Sample")
+simpsondata5_2      <- merge(simpsondata5, metadata, by="Sample")
+rarerichnessdata5_2 <- merge(rarerichnessdata5, metadata, by="Sample")
+raredata_meta       <- merge(raredata,metadata, by="Sample")
+
+#Make dataframe for manuscript source file
+raredataz <- lapply(raredata[,1:124], as.character)
+raredataz <- lapply(raredata[,1:124], as.numeric)
+raredataz <-as.data.frame(raredataz)
+
+rarefied_relative_data        <-decostand(raredataz, method="total")
+rarefied_relative_data$Sample <-data5$Sample
+rarefied_relative_data_2      <- merge(rarefied_relative_data,metadata, by="Sample")
+#write.csv(rarefied_relative_data_2, "PVID_MS_sourcefile.csv")
+
+#Make plots
+colors <- c("#595959", "#eb343a")
+
+shannonplot <- ggplot(shannondata5_2, aes(x=treatment,color=treatment,y=index))+
+  geom_boxplot(alpha=1/3)+
+  geom_point(alpha=1/3)+
+  theme_classic()+
+  scale_color_manual(values=colors)+
+  labs(y="Diversity",title="Shannon's H", x="Treatment")+
+  theme(legend.position = "none")
+
+richnessplot <- ggplot(rarerichnessdata5_2, aes(x=treatment,color=treatment,y=index2))+
+  geom_boxplot(alpha=1/3)+
+  geom_point(alpha=1/3)+
+  theme_classic()+
+  scale_color_manual(values=colors)+
+  labs(y="Richness",title="Richness",x="Treatment")+
+  theme(legend.position = "none")
+
+shanmean <- shannondata5_2 %>%
+  dplyr::group_by(treatment,timepoint)%>%
+  dplyr::summarize(mean=mean(index),se=std.error(index))
+
+shannonplot_time <- ggplot(shanmean, aes(x=fct_relevel(timepoint, level= c("0","4","12","24","72","108")),color=treatment,fill=treatment,group=treatment,y=mean))+
+  geom_line(position=position_dodge(width=0.3),size=1)+
+  theme_classic()+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values=colors)+
+  geom_point(data=shannondata5_2,position=position_dodge(width=0.3), aes(x=fct_relevel(timepoint, level= c("0","4","12","24","72","108")),y=index), alpha=1/2)+
+  geom_errorbar(aes(ymin=mean-se,ymax=mean+se), width=0.1,position=position_dodge(width=0.3))+
+  labs(y="Diversity",x="Time (h)")+
+  theme(legend.position = "none")
+
+shanmean <- shannondata5_2 %>%
+  dplyr::group_by(colony, treatment)%>%
+  dplyr::summarize(mean=mean(index),se=std.error(index))
+
+shannonplot2 <- ggplot(shanmean, aes(x=colony,color=treatment,fill=treatment,y=mean))+
+  geom_col(position=position_dodge(width=0.75), alpha=2/3, width=5/7)+
+  #annotate("text", x=1, y=2.5, label="B",color="black")+
+  theme_classic()+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values=colors)+
+  geom_point(data=shannondata5_2, aes(x=colony,y=index), alpha=1/2, position = position_dodge(width=0.75))+
+  geom_errorbar(aes(ymin=mean-se,ymax=mean+se),position=position_dodge(width=0.75), width=0)+
+  labs(y="Diversity",x="Coral colony")+
+  theme(legend.position = "none")
+
+richmean <- rarerichnessdata5_2 %>%
+  dplyr::group_by(treatment, timepoint)%>%
+  dplyr::summarize(mean=mean(index2),se=std.error(index2))
+richmean <- as.data.frame(richmean)
+
+richplot_mean <- ggplot(richmean, aes(x=fct_relevel(timepoint, level= c("0","4","12","24","72","108")),color=treatment,fill=treatment,group=treatment,y=mean))+
+   theme_classic()+
+  geom_line(position=position_dodge(width=0.3),size=1)+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values=colors)+
+  geom_point(data=rarerichnessdata5_2, aes(x=fct_relevel(timepoint, level= c("0","4","12","24","72","108")),y=index2), alpha=1/2, position = position_dodge(width=0.3))+
+  geom_errorbar(aes(ymin=mean-se,ymax=mean+se),position=position_dodge(width=0.3), width=0)+
+  labs(y="Richness",x="Time (h)")+
+  theme(legend.position = "none")
+
+richmean <- rarerichnessdata5_2 %>%
+  dplyr::group_by(colony, treatment)%>%
+  dplyr::summarize(mean=mean(index2),se=std.error(index2))
+richmean<-as.data.frame(richmean)
+
+richnessplot2 <- ggplot(richmean, aes(x=colony,color=treatment,fill=treatment,y=mean))+
+  geom_col(position=position_dodge(width=0.75), alpha=2/3, width=5/7)+
+  theme_classic()+
+  coord_cartesian(ylim=c(10,50))+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values=colors)+
+  geom_point(data=rarerichnessdata5_2, aes(x=colony,y=index2), alpha=1/2, position = position_dodge(width=0.75))+
+  geom_errorbar(aes(ymin=mean-se,ymax=mean+se),position=position_dodge(width=0.75), width=0)+
+  labs(y="Richness",x="Coral colony")+
+  theme(legend.position = "none")
+
+plot_grid(shannonplot, richnessplot,shannonplot_time,richplot_mean, shannonplot2, richnessplot2, nrow=3, labels= "AUTO")
+
+##Revised diversity test on rarefied data
+library(car)
+library(lme4)
+library(rstatix)
+
+is.numeric(shannondata5_2$index) #should be true
+shannondata5_2$timepoint<- as.numeric(as.character(shannondata5_2$timepoint)) #should be true 
+shannondata5_2$colony <- as.factor(shannondata5_2$colony)
+
+shannondata5_2 <- shannondata5_2 %>%
+  mutate(species = ifelse(colony %in% c("2", "3"), "PL", "PV"))
+
+shanx <-  lmer(index ~ treatment * timepoint +species + (1 | colony), data = shannondata5_2)
+Anova(shanx, test="F") # F tests (from car package)
+plot(shanx)
+qqmath(shanx, id=0.05)
+hist(resid(shanx))
+qqnorm(resid(shanx))
+shapiro.test(resid(shanx))
+
+rarerichnessdata5_2 <- rarerichnessdata5_2 %>%
+  mutate(species = ifelse(colony %in% c("2", "3"), "PL", "PV"))
+
+is.numeric(rarerichnessdata5_2$index2) #should be true
+rarerichnessdata5_2$timepoint<- as.numeric(as.character(rarerichnessdata5_2$timepoint)) #should be true 
+rarerichnessdata5_2$colony <- as.factor(rarerichnessdata5_2$colony)
+
+rrichx <-  lmer(index2 ~ treatment * timepoint + species+ (1 | colony), data = rarerichnessdata5_2)
+Anova(rrichx, test="F") # F tests (from car package)
+plot(rrichx)
+qqmath(rrichx, id=0.05)
+hist(resid(rrichx))
+qqnorm(resid(rrichx))
+shapiro.test(resid(rrichx))
+
+####Dispersion analysis
+species <- c("PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV")
+data5$species <- species
+raredate<- raredata[,1:124]
+intermediate <- raredate
+bray <- vegdist(sqrt(intermediate), method="bray")
+
+
+##Dispersion
+disperct <- betadisper(bray, group = data5$coltreat, type="centroid")
+anova(disperct)
+boxplot(disperct)
+
+##Figure of dispersion
+df <- data.frame(Distance_to_centroid=disperct$distances,Group=disperct$group)
+df$timepoint <- data5$timepoint
+df$treatment <- data5$treatment
+df$coltreat <- data5$coltreat
+df$colony <- data5$colony
+df$Sample <- data5$Sample
+df$species <- data5$species
+groups <- disperct$group
+
+str(df)
+
+rm <- aov(Distance_to_centroid~timepoint*treatment+species, data=df) #Repeated measures anova using colony as an error term
+summary(rm)
+
+df$Group <-factor(df$Group, levels =c("1C","2C","3C","4C","5C","1H","2H","3H", "4H", "5H"))
+df <- df %>%
+  mutate(treatment= ifelse(Group %in% c("1C","2C","3C","4C","5C"), "C", "H"))%>%
+  mutate(colony= ifelse(Group %in% c("1C", "1H"), "1", ifelse(Group %in% c("2C", "2H"), "2", ifelse(Group %in% c("3H", "3C"), "3", ifelse(Group %in% c("4C", "4H"), "4", "5")))))
+
+p<- ggplot(data=df,aes(x=treatment,y=Distance_to_centroid,colour=treatment))+
+  geom_boxplot(outlier.alpha = 0)+
+  theme_classic()+
+  #annotate("text", x=0.65, y=0.5, label="A",color="black")+
+  geom_point(alpha=1/2,position=position_dodge(width=0.75))+
+  labs(y="Distance to centroid", x="Treatment")+
+  scale_color_manual(values=colors)+
+  theme(legend.position = "none")
+
+dfMean_col <- df %>%
+  dplyr::group_by(colony, treatment)%>%
+  dplyr::summarize(mean=mean(Distance_to_centroid), se=std.error(Distance_to_centroid))
+
+q<- ggplot(data=dfMean_col,aes(x=colony,y=mean,colour=treatment,fill=treatment,group=treatment))+
+  #geom_boxplot(outlier.alpha = 0)+
+  geom_col(alpha=1/3, position=position_dodge(0.9))+
+  geom_errorbar(aes(ymax=mean+se, ymin=mean-se),width=0,position=position_dodge(width=0.75))+
+  theme_classic()+
+  #annotate("text", x=0.85, y=0.5, label="C",color="black")+
+  geom_point(data=df, aes(x=colony,y=Distance_to_centroid),alpha=1/2, position=position_dodge(width=0.75))+
+  scale_color_manual(values=colors)+
+  scale_fill_manual(values=colors)+
+  labs(y="Distance to centroid", x="Coral colony")+
+  theme(legend.position = "none")
+
+dfMean <- df %>%
+  dplyr::group_by(timepoint, treatment)%>%
+  dplyr::summarize(mean=mean(Distance_to_centroid), se=std.error(Distance_to_centroid))
+str(dfMean)
+
+r<- ggplot(data=dfMean,aes(x=fct_relevel(timepoint,levels=c("0","4","12","24","72","108")),group=treatment,y=mean,colour=treatment))+
+  #geom_boxplot(outlier.alpha = 0)+
+  geom_line(position=position_dodge(width=0.3),size=1)+
+  geom_errorbar(aes(ymax=mean+se,ymin=mean-se),width=0,position=position_dodge(width=0.3))+
+  theme_classic()+
+  #annotate("text", x=0.95, y=0.5, label="B",color="black")+
+  geom_point(data=df, aes(x=fct_relevel(timepoint,levels=c("0","4","12","24","72","108")),y=Distance_to_centroid),alpha=1/2, position=position_dodge(width=0.3))+
+  scale_color_manual(values=colors)+
+  labs(y="Distance to centroid",x="Time (h)")+
+  theme(legend.position = "none")
+
+##NMDS
+datax <- decostand(raredata[1:cols-1],method="total") #method 'total' normalizes data to sum up to 1 --data5[,2:cols]
+str(raredata, list.len=ncol(raredata))
+MDS <- metaMDS(sqrt(datax),
+               distance = "bray",autotransform = FALSE,
+               k = 2,
+               maxit = 999, 
+               trymax = 500,
+               wascores = TRUE)
+
+#Plots for goodness of fit
+goodness(MDS)
+stressplot(MDS)
+plot(MDS, "sites")
+MDS
+MDS$stress
+
+#Converting to matrix for ggplot
+data.scores <- as.data.frame(scores(MDS))
+data.scores$Sample <- data5$Sample
+data.scores.2 <- merge(data.scores, metadata, by="Sample")
+
+#Create convex hulls
+x1C <- data.scores.2 %>%
+  filter(coltreat=="1C")%>%
+  slice(chull(NMDS1, NMDS2))
+x1H <- data.scores.2 %>%
+  filter(coltreat=="1H")%>%
+  slice(chull(NMDS1, NMDS2))
+x2C <- data.scores.2 %>%
+  filter(coltreat=="2C")%>%
+  slice(chull(NMDS1, NMDS2))
+x2H <- data.scores.2 %>%
+  filter(coltreat=="2H")%>%
+  slice(chull(NMDS1, NMDS2))
+x3C <- data.scores.2 %>%
+  filter(coltreat=="3C")%>%
+  slice(chull(NMDS1, NMDS2))
+x3H <- data.scores.2 %>%
+  filter(coltreat=="3H")%>%
+  slice(chull(NMDS1, NMDS2))
+x4C <- data.scores.2 %>%
+  filter(coltreat=="4C")%>%
+  slice(chull(NMDS1, NMDS2))
+x4H <- data.scores.2 %>%
+  filter(coltreat=="4H")%>%
+  slice(chull(NMDS1, NMDS2))
+x5C <- data.scores.2 %>%
+  filter(coltreat=="5C")%>%
+  slice(chull(NMDS1, NMDS2))
+x5H <- data.scores.2 %>%
+  filter(coltreat=="5H")%>%
+  slice(chull(NMDS1, NMDS2))
+
+##Plot nMDS
+PVID_NMDS <- ggplot(data.scores.2, aes(x=NMDS1, y=NMDS2, fill=treatment,color=treatment))+
+  theme_classic()+
+  geom_point(size=3, aes(shape=colony))+
+  geom_polygon(data=x1C, alpha=0.1)+
+  geom_polygon(data=x1H, alpha=0.1)+
+  geom_polygon(data=x2C, alpha=0.1)+
+  geom_polygon(data=x2H, alpha=0.1)+
+  geom_polygon(data=x3H, alpha=0.1)+
+  geom_polygon(data=x3C, alpha=0.1)+
+  geom_polygon(data=x4H, alpha=0.1)+
+  geom_polygon(data=x4C, alpha=0.1)+
+  geom_polygon(data=x5H, alpha=0.1)+
+  geom_polygon(data=x5C, alpha=0.1)+
+  scale_color_manual(values=colors)+
+  #annotate("text", label="Stress=0.12", x=-0.35, y=-0.5)+
+  scale_fill_manual(values=colors)+
+  labs(title="")
+PVID_NMDS
+
+plot_grid(PVID_NMDS, p,r,q, labels = "AUTO", rel_widths = c(2, 1), rel_heights = c(2,1.5))
+
+##Revised dispersion test
+is.numeric(df$Distance_to_centroid) #should be true
+df$timepoint<- as.numeric(as.character(df$timepoint)) #should be true 
+df$colony <- as.factor(df$colony)
+
+x <-  lmer(sqrt(Distance_to_centroid) ~ species+treatment * timepoint +  (1 | colony), data = df)
+Anova(x, test="F") # F tests (from car package)
+shapiro.test(resid(x))
+plot(x)
+qqmath(x, id=0.05)
+qqnorm(resid(x))
+
+##community statistics
+dist.mat <- vegdist(sqrt(intermediate), binary=FALSE,method="bray")
+
+species <- c("PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PL","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV","PV")
+str(data5)
+data5$species <- species
+str(data5$timepoint)
+
+adn <- adonis(dist.mat~data5$species+data5$treatment*data5$colony+data5$colony*as.numeric(data5$timepoint))
+adn
